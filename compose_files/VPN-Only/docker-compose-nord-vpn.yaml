@@ -1,30 +1,60 @@
 ---
 version: "3.3"
 services:
-  nordvpn:
-    container_name: GlueTun-VPN
-    image: qmcgaw/gluetun
-    cap_add:
-      - NET_ADMIN
-    ports:
-      - 8080:8080
-      - 51420:51420
-      - 51420:51420/udp
+  soulseek:
+    image: realies/soulseek
+    network_mode: service:gluetun
+    container_name: soulseek
+    depends_on:
+      - gluetun
+    restart: unless-stopped
+    volumes:
+      - /persistent/appdata:/data/.SoulseekQt
+      - /persistent/downloads:/data/Soulseek Downloads
+      - /persistent/logs:/data/Soulseek Chat Logs
+      - /persistent/shared:/data/Soulseek Shared Folder
     environment:
-      - VPN_SERVICE_PROVIDER=nordvpn
-      - OPENVPN_USER=${OPENVPN_USER}
-      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
-      - SERVER_REGIONS=${SERVER_REGIONS}
-      - VPN_TYPE=openvpn
-    restart: always
+      - PGID=1000
+      - PUID=1000
+  gluetun:
+    container_name: gluetun
+    image: qmcgaw/gluetun
+    cap_add: [ NET_ADMIN ]
+    restart: unless-stopped
+    # expose qBittorrent WebUI (adjust if you use a different WebUI port)
+    ports:
+      - "8088:8088"   # qBittorrent WebUI through VPN
+      # (Do NOT publish your torrent listen port here; Proton's port is inbound via the tunnel.)
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      # ---- From your Proton WG config ----
+      - WIREGUARD_PRIVATE_KEY=${WG_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${WG_ADDRESS}        # e.g. 10.2.3.4/32
+      - VPN_ENDPOINT_IP=${WG_ENDPOINT_IP}        # or set VPN_ENDPOINT_HOSTNAME
+      - VPN_ENDPOINT_PORT=${WG_ENDPOINT_PORT}    # usually 51820
+      - FIREWALL_INPUT_PORTS=8088        # <-- allow WebUI inbound
+      - FIREWALL_OUTBOUND_SUBNETS=10.0.0.0/24
+      - WIREGUARD_PUBLIC_KEY=${WG_PUBLIC_KEY}
+      # ------------------------------------
+      - VPN_PORT_FORWARDING=on
+      - VPN_PORT_FORWARDING_PROVIDER=protonvpn
+      - VPN_PORT_FORWARDING_STATUS_FILE=/gluetun/forwarded_port
+      # Automatically update qBittorrent's listening port when Proton assigns/changes it
+      - UPDATER_PERIOD=24h
+      - TZ=${TZ}
+    volumes:
+      - ${COMMON_PATH}/gluetun:/gluetun
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
-    network_mode: service:nordvpn
+    network_mode: service:gluetun
     container_name: qbittorrent
     depends_on:
-      - nordvpn
+          - gluetun
     environment:
-      - WEBUI_PORT=8080
+      - WEBUI_PORT=8088
+      - QB_WEBUI_USERNAME=admin
+      - QB_WEBUI_PASSWORD=adminadmin
       - PUID=0
       - PGID=0
       - TZ=${TZ}
@@ -32,7 +62,6 @@ services:
     volumes:
       - ${COMMON_PATH}:${COMMON_PATH}
       - ${COMMON_PATH}/configs/qbittorrent:/config
-      - ${COMMON_PATH}/qbittorrent/downloads:/downloads
     restart: unless-stopped
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
@@ -81,10 +110,8 @@ services:
     volumes:
       - ${COMMON_PATH}:${COMMON_PATH}
       - ${COMMON_PATH}/configs/sonarr:/config
-      - ${COMMON_PATH}/sonarr/tv:/tv
-      - ${COMMON_PATH}/qbittorrent/downloads:/downloads
     ports:
-      - 8989:8989
+      - 3456:3456
     restart: unless-stopped
   radarr:
     image: lscr.io/linuxserver/radarr:latest
@@ -96,11 +123,23 @@ services:
     volumes:
       - ${COMMON_PATH}:${COMMON_PATH}
       - ${COMMON_PATH}/configs/radarr:/config
-      - ${COMMON_PATH}/radarr/movies:/movies
-      - ${COMMON_PATH}/qbittorrent/downloads:/downloads
     ports:
       - 7878:7878
     restart: unless-stopped
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    environment:
+      - PUID=0
+      - PGID=0
+      - TZ=${TZ}
+    volumes:
+      - ${COMMON_PATH}:${COMMON_PATH}
+      - ${COMMON_PATH}/configs/lidarr:/config
+    ports:
+      - 8686:8686
+    restart: unless-stopped
+
   jellyfin:
     image: lscr.io/linuxserver/jellyfin:latest
     container_name: jellyfin
@@ -118,9 +157,14 @@ services:
       - ${COMMON_PATH}:${COMMON_PATH}
       - ${COMMON_PATH}/configs/jellyfin:/config
       - ${COMMON_PATH}/jellyfin/cache:/cache
-      - ${COMMON_PATH}/sonarr/tv:/data/tvshows
-      - ${COMMON_PATH}/radarr/movies:/data/movies
-      - ${COMMON_PATH}/qbittorrent/downloads:/data/media_downloads
+    deploy:
+       resources:
+         reservations:
+           devices:
+             - driver: nvidia
+               count: 1
+               capabilities:
+                 - gpu
     restart: unless-stopped
   jellyseerr:
     image: fallenbagel/jellyseerr:latest
