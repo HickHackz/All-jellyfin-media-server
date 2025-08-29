@@ -45,6 +45,29 @@ services:
       - TZ=${TZ}
     volumes:
       - ${COMMON_PATH}/gluetun:/gluetun
+
+  qb-port-watcher:
+    image: alpine:3.20
+    container_name: qb-port-watcher
+    # share the network namespace with gluetun/qbittorrent
+    network_mode: service:gluetun
+    depends_on:
+      - gluetun
+      - qbittorrent
+    environment:
+      - QBT_HOST=127.0.0.1
+      - QBT_PORT=8088
+      - QBT_USER=admin
+      - QBT_PASS=adminadmin
+      - PORT_FILE=/gluetun/forwarded_port
+      - CHECK_EVERY=5s
+    volumes:
+      - ${COMMON_PATH}/gluetun:/gluetun:ro
+      - ${COMMON_PATH}/scripts/qb-port-watcher.sh:/app/watch.sh:ro
+    # install tools then run
+    entrypoint: ["/bin/sh","-c","apk add --no-cache curl inotify-tools bash >/dev/null && /app/watch.sh"]
+    restart: unless-stopped
+
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
     network_mode: service:gluetun
